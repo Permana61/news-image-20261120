@@ -5,10 +5,10 @@ An entry for the make.fun competition "Sum up 20 November's world news
 in one image" (bounty news-image-20261120).
 
 Stdlib-only Python: draws a deterministic newspaper front page
-(1800 px wide, height fitted to content) summarising forty verified
-world-news stories from Friday 20 November 2026, grouped by continent.
-No third-party packages, no external fonts, no images, no network:
-every pixel is computed in this file.
+(1024 by 1024 pixels, inside the competition's 1 MiB / 1024x1024 gate)
+summarising forty verified world-news stories from Friday 20 November
+2026, grouped by continent. No third-party packages, no external fonts,
+no images, no network: every pixel is computed in this file.
 
 Run:
     python3 main.py
@@ -436,32 +436,47 @@ WHITE = (255, 255, 255)
 
 
 # --------------------------------------------------------------------------
-# Layout. Two passes: measure the story rows first (so the page height
-# fits the content exactly), then draw. Nothing is positioned by hand
-# after this point — every y comes from the running cursor.
+# Layout. Two passes: measure the story rows first (the canvas is fixed
+# at 1024x1024, so measure() must come out <= 1024), then draw. Nothing
+# is positioned by hand after this point — every y comes from the running
+# cursor, and measure() and draw() use the same steps.
 # --------------------------------------------------------------------------
 
-W = 1800
-MARGIN = 60
+W = 1024
+H = 1024
+MARGIN = 16
 CW = W - 2 * MARGIN
-COLW = (CW - 40) // 2
-GUT = 40
+COLS = 4
+GUT = 12
+COLW = (CW - (COLS - 1) * GUT) // COLS
 
 MASTHEAD = "THE WORLD IN ONE DAY"
 DATE_LINE = "FRIDAY 20 NOVEMBER 2026"
 STAT_LINE = "40 STORIES \u2022 7 CONTINENTS"
 MAP_LABEL = "WHERE IT HAPPENED"
-MAP_SPACING = 12
-MAP_DOT = 4
+MAP_SPACING = 2
+MAP_DOT = 1
+
+HEADER_TOP = 16
+MASTHEAD_SCALE = 6
+DATE_SCALE = 2
+STAT_H = 20
+SECTION_H = 12
+SECTION_GAP = 2
 
 
 def cell_height(headline, summary):
-    lines = wrap_text(summary, 2, COLW)
-    return 21 + 4 + len(lines) * 15 + 3 + 7 + 12, lines
+    """Height of one story cell: headline (scale 2 bold), summary
+    (scale 1), numbered SOURCE tag (scale 1). Headlines wrap to 2 lines
+    at the column width; summaries to 2-3 lines."""
+    hlines = wrap_text(headline, 2, COLW)
+    slines = wrap_text(summary, 1, COLW)
+    return (len(hlines) * 15 + 3 + len(slines) * 8 + 2 + 7 + 2,
+            hlines, slines)
 
 
 def build_rows():
-    """Precompute every section's story rows and heights."""
+    """Precompute every section's story rows and heights (COLS per row)."""
     rows_out = []
     n = 0
     for name, accent, stories in SECTIONS:
@@ -470,107 +485,103 @@ def build_rows():
             n += 1
             numbered.append((n, headline, summary, outlet))
         rows = []
-        for i in range(0, len(numbered), 2):
-            pair = numbered[i:i + 2]
-            heights = [cell_height(h, s)[0] for _, h, s, _ in pair]
-            rows.append((pair, max(heights)))
+        for i in range(0, len(numbered), COLS):
+            group = numbered[i:i + COLS]
+            heights = [cell_height(h, s)[0] for _, h, s, _ in group]
+            rows.append((group, max(heights)))
         rows_out.append((name, accent, rows))
     return rows_out
 
 
 def measure(rows_out):
-    y = 56                       # masthead title
-    y += 77 + 10                 # title + gap
-    y += 28 + 12                 # date line + gap
-    y += 6 + 14                  # rules + gap
-    y += 56 + 18                 # stat strip + gap
-    y += 14 + 8                  # map label + gap
-    y += len(MAP_GRID) * MAP_SPACING + 22   # map + gap
+    """Total page height if drawn from HEADER_TOP. The canvas is fixed
+    at 1024; this must come out <= 1024."""
+    y = HEADER_TOP
+    y += max(7 * MASTHEAD_SCALE + 4 + 7 * DATE_SCALE,
+             len(MAP_GRID) * MAP_SPACING) + 4
+    y += 2 + 4                         # rule + gap
+    y += STAT_H + 6                    # stat strip + gap
     for _name, _accent, rows in rows_out:
-        y += 52                  # section header
-        for _pair, rh in rows:
+        y += SECTION_H                 # section header
+        for _group, rh in rows:
             y += rh
-        y += 16                  # gap after section
-    y += 2 + 12                  # footer rule + gap
-    y += 14 + 6                  # footer line 1
-    y += 7 + 40                  # footer line 2 + bottom margin
+        y += SECTION_GAP               # gap after section
+    y += 2 + 6                         # footer rule + gap
+    y += 7 + 4                         # footer line 1
+    y += 7 + 10                        # footer line 2 + bottom margin
     return y
 
 
 def draw_story(c, x, y, num, accent, headline, summary, outlet):
-    num_txt = "%02d" % num
-    c.text(x, y + 7, num_txt, 2, accent, bold=True)
-    hx = x + text_width(num_txt + " ", 2) + 6
-    c.text(hx, y, headline, 3, INK, bold=True)
-    _h, lines = cell_height(headline, summary)
-    ly = y + 21 + 4
-    for line in lines:
-        c.text(x, ly, line, 2, INK)
+    _h, hlines, slines = cell_height(headline, summary)
+    ly = y
+    for line in hlines:
+        c.text(x, ly, line, 2, INK, bold=True)
         ly += 15
     ly += 3
-    c.text(x, ly, "SOURCE: " + outlet.upper(), 1, accent, bold=True)
+    for line in slines:
+        c.text(x, ly, line, 1, INK)
+        ly += 8
+    ly += 2
+    c.text(x, ly, "%02d  SOURCE: %s" % (num, outlet.upper()),
+           1, accent, bold=True)
 
 
 def draw(c, rows_out):
-    c.fill(0, 0, W, c.h, PAPER)
-    # double outer border
-    c.rect(24, 24, W - 48, c.h - 48, RULE, 3)
-    c.rect(32, 32, W - 64, c.h - 64, RULE, 1)
+    c.fill(0, 0, W, H, PAPER)
+    # single outer border
+    c.rect(8, 8, W - 16, H - 16, RULE, 2)
 
-    y = 56
-    c.text_center(W // 2, y, MASTHEAD, 11, INK, bold=True)
-    y += 77 + 10
-    c.text_center(W // 2, y, DATE_LINE, 4, INK, spacing=2)
-    y += 28 + 12
-    c.fill(MARGIN, y, CW, 4, RULE)
-    c.fill(MARGIN, y + 8, CW, 2, RULE)
-    y += 6 + 14
-
-    # stat strip
-    c.fill(MARGIN, y, CW, 56, NAVY)
-    c.text_center(W // 2, y + 14, STAT_LINE, 4, WHITE, bold=True)
-    y += 56 + 18
-
-    # dotted world map
-    c.text_center(W // 2, y, MAP_LABEL, 2, MUTED, spacing=2)
-    y += 14 + 8
+    y = HEADER_TOP
+    # masthead + date (left), dotted world map (right, same band)
+    c.text(MARGIN + 4, y, MASTHEAD, MASTHEAD_SCALE, INK, bold=True)
+    c.text(MARGIN + 4, y + 7 * MASTHEAD_SCALE + 4, DATE_LINE,
+           DATE_SCALE, INK, spacing=2)
     cols = max(len(r) for r in MAP_GRID)
     map_w = cols * MAP_SPACING
-    x0 = (W - map_w) // 2
+    x0 = W - MARGIN - map_w
     for ri, row in enumerate(MAP_GRID):
         for ci, ch in enumerate(row):
             if ch == "#":
                 c.dot(x0 + ci * MAP_SPACING + MAP_SPACING // 2,
                       y + ri * MAP_SPACING + MAP_SPACING // 2,
                       MAP_DOT, NAVY)
-    y += len(MAP_GRID) * MAP_SPACING + 22
+    y += max(7 * MASTHEAD_SCALE + 4 + 7 * DATE_SCALE,
+             len(MAP_GRID) * MAP_SPACING) + 4
+    c.fill(MARGIN, y, CW, 2, RULE)
+    y += 2 + 4
+
+    # stat strip
+    c.fill(MARGIN, y, CW, STAT_H, NAVY)
+    c.text_center(W // 2, y + 3, STAT_LINE, 2, WHITE, bold=True)
+    y += STAT_H + 6
 
     # continent sections
     for name, accent, rows in rows_out:
-        total = sum(len(pair) for pair, _ in rows)
+        total = sum(len(group) for group, _ in rows)
         first = rows[0][0][0][0]
         last = rows[-1][0][-1][0]
-        c.fill(MARGIN, y, CW, 52, (232, 226, 211))
-        c.fill(MARGIN, y, 10, 52, accent)
-        c.text(MARGIN + 24, y + 15, name, 4, accent, bold=True)
-        c.text_right(W - MARGIN - 24, y + 17,
+        c.fill(MARGIN, y, CW, SECTION_H, (232, 226, 211))
+        c.fill(MARGIN, y, 6, SECTION_H, accent)
+        c.text(MARGIN + 10, y + 2, name, 1, accent, bold=True)
+        c.text_right(W - MARGIN - 10, y + 2,
                      "%d STORIES  \u2022  %02d-%02d" % (total, first, last),
-                     2, MUTED, bold=True)
-        y += 52
-        for pair, rh in rows:
-            for k, (num, headline, summary, outlet) in enumerate(pair):
+                     1, MUTED, bold=True)
+        y += SECTION_H
+        for group, rh in rows:
+            for k, (num, headline, summary, outlet) in enumerate(group):
                 x = MARGIN + k * (COLW + GUT)
                 draw_story(c, x, y, num, accent, headline, summary, outlet)
             y += rh
-        y += 16
+        y += SECTION_GAP
 
     # footer
     c.fill(MARGIN, y, CW, 2, RULE)
-    y += 12
+    y += 2 + 6
     c.text_center(W // 2, y,
                   "All forty stories verified against reporting published "
-                  "on Friday 20 November 2026.", 2, MUTED)
-    y += 14 + 6
+                  "on Friday 20 November 2026.", 1, MUTED)
+    y += 7 + 4
     c.text_center(W // 2, y,
                   "Drawn by a deterministic Python program (stdlib only). "
                   "No photographs, no external data. 40 stories, 7 continents.",
@@ -580,7 +591,10 @@ def draw(c, rows_out):
 def main():
     rows_out = build_rows()
     total = measure(rows_out)
-    canvas = Canvas(W, total, PAPER)
+    print("measured total height: %d (canvas %d)" % (total, H))
+    if total > H:
+        print("OVERFLOW by %d px - layout does not fit" % (total - H))
+    canvas = Canvas(W, H, PAPER)
     draw(canvas, rows_out)
     outdir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(outdir, exist_ok=True)
