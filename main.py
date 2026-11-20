@@ -1,394 +1,592 @@
 #!/usr/bin/env python3
-"""news-image-20261120: draws a 1024x1024 world-news infographic for
-Friday 20 November 2026, stdlib only, deterministic PNG output.
+"""World News 20 November 2026 — v2 (40 stories, 7 continents).
 
-Hand-written 5x7 bitmap font, manual PNG encoder (struct + zlib).
-No network, no randomness, no time, no file reads at runtime.
+An entry for the make.fun competition "Sum up 20 November's world news
+in one image" (bounty news-image-20261120).
+
+Stdlib-only Python: draws a deterministic newspaper front page
+(1800 px wide, height fitted to content) summarising forty verified
+world-news stories from Friday 20 November 2026, grouped by continent.
+No third-party packages, no external fonts, no images, no network:
+every pixel is computed in this file.
+
+Run:
+    python3 main.py
+
+Writes entry.png to $MAKEFUN_OUTPUT_DIR when set, otherwise to /output.
+Running twice produces a byte-identical file.
 """
 
 import os
 import struct
 import zlib
+from binascii import crc32
 
-W, H = 1024, 1024
+# --------------------------------------------------------------------------
+# 5x7 bitmap font, drawn by hand in this file.
+# Each glyph is 7 rows of 5 cells; '#' is ink, '.' is blank.
+# --------------------------------------------------------------------------
 
-# ---------------------------------------------------------------- font 5x7
-# Each glyph: 7 rows of 5 characters, '#' = pixel on, '.' = off.
-FONT = {
-    'A': (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    'B': ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
-    'C': (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
-    'D': ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
-    'E': ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
-    'F': ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
-    'G': (".####", "#....", "#....", "#.###", "#...#", "#...#", ".###."),
-    'H': ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    'I': ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"),
-    'J': ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
-    'K': ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
-    'L': ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
-    'M': ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
-    'N': ("#...#", "##..#", "##..#", "#.#.#", "#..##", "#..##", "#...#"),
-    'O': (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    'P': ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
-    'Q': (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
-    'R': ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
-    'S': (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
-    'T': ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
-    'U': ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    'V': ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
-    'W': ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
-    'X': ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
-    'Y': ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
-    'Z': ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
-    '0': (".###.", "#..##", "#.#.#", "##..#", "#...#", "#...#", ".###."),
-    '1': ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
-    '2': (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
-    '3': ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
-    '4': ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
-    '5': ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
-    '6': (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
-    '7': ("#####", "....#", "...#.", "..#..", "..#..", "..#..", "..#.."),
-    '8': (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
-    '9': (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
-    ' ': (".....", ".....", ".....", ".....", ".....", ".....", "....."),
-    '.': (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
-    ',': (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."),
-    ':': (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
-    ';': (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."),
-    '!': ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
-    '?': (".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.."),
-    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
-    '"': (".#.#.", ".#.#.", ".#.#.", ".....", ".....", ".....", "....."),
-    '-': (".....", ".....", ".....", "#####", ".....", ".....", "....."),
-    '/': ("....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."),
-    '(': ("...##", "..#..", ".#...", ".#...", ".#...", "..#..", "...##"),
-    ')': ("##...", "..#..", "...#.", "...#.", "...#.", "..#..", "##..."),
-    '%': ("##..#", "##.#.", "...#.", "..#..", ".#...", "#.##.", "#..##"),
-    '$': ("..#..", ".####", "#.#..", ".###.", "..#.#", "####.", "..#.."),
-    '&': (".##..", "#..#.", "#..#.", ".#...", "#.#.#", "#..#.", ".##.#"),
-    '+': (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
-    '=': (".....", ".....", "#####", ".....", "#####", ".....", "....."),
-    '|': ("..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
-    '\u00b0': (".###.", "#...#", "#...#", ".###.", ".....", ".....", "....."),
+FONT = {}
+
+
+def _glyph(ch, rows):
+    FONT[ch] = rows
+
+
+_glyph('A', (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"))
+_glyph('B', ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."))
+_glyph('C', (".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."))
+_glyph('D', ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."))
+_glyph('E', ("#####", "#....", "#....", "####.", "#....", "#....", "#####"))
+_glyph('F', ("#####", "#....", "#....", "####.", "#....", "#....", "#...."))
+_glyph('G', (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."))
+_glyph('H', ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"))
+_glyph('I', ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"))
+_glyph('J', ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."))
+_glyph('K', ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"))
+_glyph('L', ("#....", "#....", "#....", "#....", "#....", "#....", "#####"))
+_glyph('M', ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"))
+_glyph('N', ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"))
+_glyph('O', (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."))
+_glyph('P', ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."))
+_glyph('Q', (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"))
+_glyph('R', ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"))
+_glyph('S', (".####", "#....", "#....", ".###.", "....#", "....#", "####."))
+_glyph('T', ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."))
+_glyph('U', ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."))
+_glyph('V', ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."))
+_glyph('W', ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"))
+_glyph('X', ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"))
+_glyph('Y', ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."))
+_glyph('Z', ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"))
+
+_glyph('a', (".....", ".....", ".####", "....#", ".####", "#...#", ".###."))
+_glyph('b', ("#....", "#....", "####.", "#...#", "#...#", "#...#", "####."))
+_glyph('c', (".....", ".....", ".###.", "#....", "#....", "#....", ".###."))
+_glyph('d', ("....#", "....#", ".####", "#...#", "#...#", "#...#", ".###."))
+_glyph('e', (".....", ".....", ".###.", "#...#", "#####", "#....", ".###."))
+_glyph('f', ("..##.", ".#..#", ".#...", "###..", ".#...", ".#...", ".#..."))
+_glyph('g', (".....", ".....", ".####", "#...#", "#...#", ".####", "....#"))
+_glyph('h', ("#....", "#....", "####.", "#...#", "#...#", "#...#", "#...#"))
+_glyph('i', (".....", "..#..", ".....", ".##..", "..#..", "..#..", ".###."))
+_glyph('j', ("...#.", ".....", "..##.", "...#.", "...#.", "...#.", ".##.."))
+_glyph('k', ("#....", "#....", "#..#.", "#.#..", "##...", "#.#..", "#..#."))
+_glyph('l', (".##..", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."))
+_glyph('m', (".....", ".....", "##.#.", "#.#.#", "#.#.#", "#.#.#", "#.#.#"))
+_glyph('n', (".....", ".....", "####.", "#...#", "#...#", "#...#", "#...#"))
+_glyph('o', (".....", ".....", ".###.", "#...#", "#...#", "#...#", ".###."))
+_glyph('p', (".....", ".....", "####.", "#...#", "#...#", "####.", "#...."))
+_glyph('q', (".....", ".....", ".####", "#...#", "#...#", ".###.", "....#"))
+_glyph('r', (".....", ".....", "#.##.", "##..#", "#....", "#....", "#...."))
+_glyph('s', (".....", ".....", ".####", "#....", ".###.", "....#", "####."))
+_glyph('t', (".#...", ".#...", "###..", ".#...", ".#...", ".#...", "..##."))
+_glyph('u', (".....", ".....", "#...#", "#...#", "#...#", "#..##", ".##.#"))
+_glyph('v', (".....", ".....", "#...#", "#...#", "#...#", ".#.#.", "..#.."))
+_glyph('w', (".....", ".....", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."))
+_glyph('x', (".....", ".....", "#...#", ".#.#.", "..#..", ".#.#.", "#...#"))
+_glyph('y', (".....", ".....", "#...#", "#...#", ".####", "....#", ".###."))
+_glyph('z', (".....", ".....", "#####", "...#.", "..#..", ".#...", "#####"))
+
+_glyph('0', (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."))
+_glyph('1', ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."))
+_glyph('2', (".###.", "#...#", "....#", "..##.", ".#...", "#....", "#####"))
+_glyph('3', ("####.", "....#", "....#", ".###.", "....#", "....#", "####."))
+_glyph('4', ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."))
+_glyph('5', ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."))
+_glyph('6', (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."))
+_glyph('7', ("#####", "....#", "...#.", "..#..", "..#..", "..#..", "..#.."))
+_glyph('8', (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."))
+_glyph('9', (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."))
+
+_glyph(' ', (".....", ".....", ".....", ".....", ".....", ".....", "....."))
+_glyph('.', (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."))
+_glyph(',', (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."))
+_glyph(':', (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."))
+_glyph(';', (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."))
+_glyph("'", ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."))
+_glyph('"', (".#.#.", ".#.#.", ".....", ".....", ".....", ".....", "....."))
+_glyph('!', ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."))
+_glyph('?', (".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.."))
+_glyph('-', (".....", ".....", ".....", ".###.", ".....", ".....", "....."))
+_glyph('(', ("...#.", "..#..", "..#..", "..#..", "..#..", "..#..", "...#."))
+_glyph(')', (".#...", "..#..", "..#..", "..#..", "..#..", "..#..", ".#..."))
+_glyph('/', ("....#", "...#.", "...#.", "..#..", "..#..", ".#...", "#...."))
+_glyph('%', ("#...#", "#..#.", "...#.", "..#..", ".#...", "#..#.", "#...#"))
+_glyph('&', (".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"))
+_glyph('$', ("..#..", ".####", "#.#..", ".###.", "..#.#", "####.", "..#.."))
+_glyph('+', (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."))
+_glyph('=', (".....", ".....", "#####", ".....", "#####", ".....", "....."))
+_glyph('*', (".....", ".#.#.", "..#..", "#####", "..#..", ".#.#.", "....."))
+_glyph('#', (".#.#.", ".#.#.", "#####", ".#.#.", "#####", ".#.#.", ".#.#."))
+_glyph('@', (".###.", "#...#", "#.###", "#.#.#", "#.###", "#....", ".###."))
+_glyph('_', (".....", ".....", ".....", ".....", ".....", ".....", "#####"))
+_glyph('~', (".....", ".....", ".#.#.", "#.#.#", ".....", ".....", "....."))
+_glyph('\u2022', (".....", "..#..", ".###.", ".###.", "..#..", ".....", "....."))
+
+
+# --------------------------------------------------------------------------
+# Text handling. Curly punctuation and dashes are folded to the ASCII
+# glyphs above so every story renders with the same font.
+# --------------------------------------------------------------------------
+
+_FOLD = {
+    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+    "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u00a0": " ",
 }
 
 
-def text_width(s, scale, spacing):
-    """Pixel width of string s at given scale and inter-glyph spacing."""
-    if not s:
+def clean(text):
+    return "".join(_FOLD.get(ch, ch) for ch in text)
+
+
+def glyph_rows(ch):
+    return FONT.get(ch, FONT["?"])
+
+
+def text_width(text, scale, spacing=1):
+    """Pixel width of text at the given scale (spacing between glyphs)."""
+    if not text:
         return 0
-    return len(s) * (5 * scale + spacing) - spacing
+    return len(text) * (5 * scale + spacing) - spacing
 
 
-def wrap_text(s, scale, spacing, max_w):
-    """Greedy word wrap; returns list of lines, each <= max_w pixels."""
-    words = s.split(" ")
+def wrap_text(text, scale, max_w, spacing=1):
+    """Greedy word wrap; returns a list of lines that fit max_w pixels."""
+    words = clean(text).split(" ")
     lines, cur = [], ""
-    for w in words:
-        trial = w if not cur else cur + " " + w
+    for word in words:
+        trial = word if not cur else cur + " " + word
         if text_width(trial, scale, spacing) <= max_w or not cur:
             cur = trial
         else:
             lines.append(cur)
-            cur = w
+            cur = word
     if cur:
         lines.append(cur)
     return lines
 
 
-# ------------------------------------------------------------------- canvas
-class Canvas:
-    def __init__(self, w, h, bg=(255, 255, 255)):
-        self.w, self.h = w, h
-        self.px = bytearray(bg * (w * h))
+# --------------------------------------------------------------------------
+# Canvas: an RGB pixel buffer with rectangle and bitmap-text drawing.
+# --------------------------------------------------------------------------
 
-    def set(self, x, y, color):
+class Canvas:
+    def __init__(self, width, height, bg):
+        self.w = width
+        self.h = height
+        self.px = bytearray(bg * (width * height))
+
+    def put(self, x, y, color):
         if 0 <= x < self.w and 0 <= y < self.h:
             i = (y * self.w + x) * 3
-            self.px[i], self.px[i + 1], self.px[i + 2] = color
+            self.px[i:i + 3] = color
 
-    def rect(self, x, y, w, h, color):
-        for yy in range(y, y + h):
-            for xx in range(x, x + w):
-                self.set(xx, yy, color)
+    def fill(self, x, y, w, h, color):
+        x0, y0 = max(x, 0), max(y, 0)
+        x1, y1 = min(x + w, self.w), min(y + h, self.h)
+        for yy in range(y0, y1):
+            base = (yy * self.w + x0) * 3
+            row = color * (x1 - x0)
+            self.px[base:base + (x1 - x0) * 3] = row
 
-    def hline(self, x0, x1, y, color):
-        for xx in range(x0, x1 + 1):
-            self.set(xx, y, color)
+    def rect(self, x, y, w, h, color, thick=1):
+        self.fill(x, y, w, thick, color)
+        self.fill(x, y + h - thick, w, thick, color)
+        self.fill(x, y, thick, h, color)
+        self.fill(x + w - thick, y, thick, h, color)
 
-    def vline(self, x, y0, y1, color):
-        for yy in range(y0, y1 + 1):
-            self.set(x, yy, color)
+    def dot(self, cx, cy, r, color):
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if dx * dx + dy * dy <= r * r:
+                    self.put(cx + dx, cy + dy, color)
 
-    def line(self, x0, y0, x1, y1, color):
-        dx, dy = abs(x1 - x0), -abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy
-        while True:
-            self.set(x0, y0, color)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
-
-    def disc(self, cx, cy, r, color):
-        for yy in range(cy - r, cy + r + 1):
-            for xx in range(cx - r, cx + r + 1):
-                if (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r:
-                    self.set(xx, yy, color)
-
-    def ring(self, cx, cy, r, color):
-        for yy in range(cy - r, cy + r + 1):
-            for xx in range(cx - r, cx + r + 1):
-                d2 = (xx - cx) ** 2 + (yy - cy) ** 2
-                if (r - 1) ** 2 <= d2 <= r * r:
-                    self.set(xx, yy, color)
-
-    def tri(self, x1, y1, x2, y2, x3, y3, color):
-        """Filled triangle via scanlines."""
-        ys = sorted(((x1, y1), (x2, y2), (x3, y3)), key=lambda p: p[1])
-        (ax, ay), (bx, by), (cx, cy) = ys
-
-        def edge_x(y, p, q):
-            if p[1] == q[1]:
-                return p[0]
-            return p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1])
-
-        for y in range(ay, cy + 1):
-            if y < by:
-                xa, xb = edge_x(y, (ax, ay), (bx, by)), edge_x(y, (ax, ay), (cx, cy))
-            else:
-                xa, xb = edge_x(y, (bx, by), (cx, cy)), edge_x(y, (ax, ay), (cx, cy))
-            lo, hi = int(min(xa, xb)), int(max(xa, xb))
-            for x in range(lo, hi + 1):
-                self.set(x, y, color)
-
-    # ------------------------------------------------------------ text
-    def draw_char(self, ch, x, y, scale, color):
-        glyph = FONT.get(ch.upper(), FONT['?'])
-        for row in range(7):
-            bits = glyph[row]
-            for col in range(5):
-                if bits[col] == '#':
-                    self.rect(x + col * scale, y + row * scale,
-                              scale, scale, color)
-
-    def draw_text(self, s, x, y, scale, color, spacing=None):
-        if spacing is None:
-            spacing = max(1, scale // 2)
+    def text(self, x, y, s, scale, color, spacing=1, bold=False):
+        """Draw text left-aligned at (x, y); returns pixel width drawn."""
+        s = clean(s)
         cx = x
         for ch in s:
-            if ch != ' ':
-                self.draw_char(ch, cx, y, scale, color)
+            rows = glyph_rows(ch)
+            for ry in range(7):
+                row = rows[ry]
+                for rx in range(5):
+                    if row[rx] == "#":
+                        bx, by = cx + rx * scale, y + ry * scale
+                        self.fill(bx, by, scale, scale, color)
+                        if bold:
+                            self.fill(bx + 1, by, scale, scale, color)
             cx += 5 * scale + spacing
-        return cx - spacing - x  # width drawn
+        return cx - x - spacing
+
+    def text_center(self, cx, y, s, scale, color, spacing=1, bold=False):
+        w = text_width(clean(s), scale, spacing)
+        return self.text(cx - w // 2, y, s, scale, color, spacing, bold)
+
+    def text_right(self, x, y, s, scale, color, spacing=1, bold=False):
+        w = text_width(clean(s), scale, spacing)
+        return self.text(x - w, y, s, scale, color, spacing, bold)
 
 
-# -------------------------------------------------------------- PNG encoder
+# --------------------------------------------------------------------------
+# PNG encoder (RGB, no interlace, filter None). Deterministic: same pixels
+# in, same bytes out — no timestamps or variable chunks.
+# --------------------------------------------------------------------------
+
 def _chunk(tag, data):
     out = struct.pack(">I", len(data)) + tag + data
-    out += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    out += struct.pack(">I", crc32(tag + data) & 0xFFFFFFFF)
     return out
 
 
 def write_png(path, canvas):
-    ihdr = struct.pack(">IIBBBBB", canvas.w, canvas.h, 8, 2, 0, 0, 0)
     raw = bytearray()
-    stride = canvas.w * 3
     for y in range(canvas.h):
-        raw.append(0)  # filter: None
-        raw += canvas.px[y * stride:(y + 1) * stride]
-    png = (b"\x89PNG\r\n\x1a\n"
-           + _chunk(b"IHDR", ihdr)
-           + _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-           + _chunk(b"IEND", b""))
+        raw.append(0)
+        start = y * canvas.w * 3
+        raw += canvas.px[start:start + canvas.w * 3]
+    png = b"\x89PNG\r\n\x1a\n"
+    png += _chunk(b"IHDR", struct.pack(">IIBBBBB", canvas.w, canvas.h,
+                                       8, 2, 0, 0, 0))
+    png += _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += _chunk(b"IEND", b"")
     with open(path, "wb") as f:
         f.write(png)
     return len(png)
 
 
-# ------------------------------------------------------------------- icons
-# All icons drawn in white inside the panel top bar, in a 44x34 box
-# whose top-left is (x, y). Simple shapes only.
-def icon_missile(c, x, y, col):
-    # rocket body + nose + fins + flame
-    c.rect(x + 19, y + 5, 6, 14, col)                    # body
-    c.tri(x + 19, y + 5, x + 25, y + 5, x + 22, y - 1, col)  # nose
-    c.tri(x + 19, y + 15, x + 14, y + 21, x + 19, y + 19, col)  # fin L
-    c.tri(x + 25, y + 15, x + 30, y + 21, x + 25, y + 19, col)  # fin R
-    c.tri(x + 20, y + 19, x + 24, y + 19, x + 22, y + 30, col)  # flame
+# --------------------------------------------------------------------------
+# Dotted world map (hand-sketched, 76 x 22 cells). '#' is land.
+# --------------------------------------------------------------------------
 
-
-def icon_globe(c, x, y, col):
-    cx, cy = x + 22, y + 17
-    c.ring(cx, cy, 12, col)
-    c.hline(cx - 11, cx + 11, cy, col)
-    c.hline(cx - 9, cx + 9, cy - 6, col)
-    c.hline(cx - 9, cx + 9, cy + 6, col)
-    c.vline(cx, cy - 12, cy + 12, col)
-
-
-def icon_cyclone(c, x, y, col):
-    # spiral of dots, radius growing with angle
-    cx, cy = x + 22, y + 17
-    for k in range(0, 42):
-        ang = k * 0.42
-        r = 1.5 + k * 0.27
-        import math
-        px = int(cx + r * math.cos(ang))
-        py = int(cy + r * math.sin(ang))
-        c.disc(px, py, 1, col)
-
-
-def icon_tanker(c, x, y, col):
-    # hull + cabin + funnel + waves
-    c.tri(x + 6, y + 16, x + 38, y + 16, x + 33, y + 26, col)
-    c.rect(x + 6, y + 16, 27, 10, col)
-    c.rect(x + 26, y + 8, 7, 8, col)
-    c.rect(x + 34, y + 11, 3, 5, col)
-    c.hline(x + 4, x + 40, y + 30, col)
-    c.hline(x + 8, x + 36, y + 32, col)
-
-
-def icon_megaphone(c, x, y, col):
-    # cone + handle + sound arcs
-    c.tri(x + 8, y + 12, x + 8, y + 22, x + 30, y + 6, col)
-    c.tri(x + 8, y + 12, x + 8, y + 22, x + 30, y + 28, col)
-    c.rect(x + 4, y + 12, 5, 10, col)
-    c.rect(x + 10, y + 22, 4, 8, col)
-    c.ring(x + 36, y + 17, 4, col)
-    c.ring(x + 36, y + 17, 8, col)
-
-
-def icon_chart(c, x, y, col):
-    c.rect(x + 8, y + 20, 6, 10, col)
-    c.rect(x + 18, y + 14, 6, 16, col)
-    c.rect(x + 28, y + 8, 6, 22, col)
-    c.hline(x + 4, x + 40, y + 31, col)
-
-
-ICONS = (icon_missile, icon_globe, icon_cyclone,
-         icon_tanker, icon_megaphone, icon_chart)
-
-# ------------------------------------------------------------------- content
-NAVY = (15, 32, 64)
-GOLD = (242, 183, 5)
-RED = (215, 38, 61)
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-BODY = (51, 51, 51)
-BORDER = (217, 217, 217)
-
-PANELS = [
-    ("UKRAINE", (192, 57, 43),
-     "MISSILES HIT KYIV",
-     "Russian ballistic missiles strike the capital overnight; "
-     "fire in a 3-storey block in Obolonskyi district."),
-    ("CLIMATE", (30, 132, 73),
-     "COP31 CLOSES IN ANTALYA",
-     "Final draft drops fossil-fuel language; first summit to "
-     "admit the 1.5\u00b0C goal will be missed."),
-    ("WEATHER", (36, 113, 163),
-     "CYCLONE AKVAN HITS INDIA",
-     "Landfall near Gopalpur, Odisha by noon; winds to 110 km/h; "
-     "nearly 300,000 evacuated."),
-    ("ENERGY", (202, 111, 30),
-     "TANKERS HIT IN HORMUZ",
-     "Two oil tankers hit naval mines in the Strait of Hormuz, "
-     "Iran's Guards say; oil prices jump."),
-    ("EUROPE", (108, 52, 131),
-     "ITALY STOPS FOR A DAY",
-     "CGIL's 24-hour general strike: marches in about 100 cities; "
-     "buses, metro and trams disrupted."),
-    ("MARKETS", (17, 122, 101),
-     "TAIWAN CURBS SHORT SELLING",
-     "New curbs take effect after the Taiex plunged 4.4%; stocks "
-     "down 3.5% cannot be shorted below close."),
+MAP_GRID = [
+    "............................................................................",
+    "....##########.................................#############.................",
+    "...##############....###......................#########################........",
+    "....##############.....#.....##..######........###########################......",
+    ".....#############.........##########..........#####################..##......",
+    "......###########..........#########............###############....###.......",
+    ".......#########...........#######.............############..................",
+    "........#####............##########.###.......######..######..................",
+    ".........####...........##########...........#####....######..................",
+    "..........###..........##########............####.....#####...................",
+    ".................######.#########....................#######................",
+    ".................################....................########..............",
+    ".................################.....................######.###............",
+    "..................###############.......................#########...........",
+    "..................##############.........................########............",
+    "...................############..#.......................#######............",
+    "...................###########............................######.............",
+    "....................#########.............................####....#..........",
+    ".....................#######.....................................##.........",
+    "......................##....................................................",
+    "...............##############..############.................................",
+    "...................##########....########...................................",
 ]
 
-COL_X = (24, 520)
-ROW_Y = (132, 416, 700)
-PANEL_W, PANEL_H = 480, 268
-TOPBAR_H = 34
+# --------------------------------------------------------------------------
+# The forty stories. Headline + one-line summary + outlet, exactly as
+# briefed; figures and names are reproduced verbatim.
+# --------------------------------------------------------------------------
 
-# Fact chip text per panel (same order as PANELS).
-FACT_CHIPS = (
-    "OBOLONSKYI DISTRICT",
-    "1.5\u00b0C GOAL WILL BE MISSED",
-    "NEARLY 300,000 EVACUATED",
-    "OIL PRICES JUMP",
-    "MARCHES IN 100 CITIES",
-    "TAIEX FELL 4.4% THURSDAY",
-)
+# (continent, accent colour, headline, summary, outlet)
+SECTIONS = [
+    ("ASIA", (185, 28, 28), [
+        ("COP31 Deadlocks on Final Day",
+         "Draft drops fossil-fuel phase-out; Pacific nations demand action as summit ends in stalemate.",
+         "Japan Times"),
+        ("Cyclone Akvan Hits Eastern India",
+         "Landfall near Gopalpur 70-80 km/h; 300,000+ evacuated in Odisha.",
+         "Reuters"),
+        ("Hormuz Tanker Attacks Intensify",
+         "Iran steps up tanker strikes; one tanker hits a mine and catches fire.",
+         "Middle East Eye"),
+        ("Taiwan Tightens Short-Selling Curbs",
+         "New rules as Taiex plunges 6.4% in worst week since 1991.",
+         "Reuters"),
+        ("Trump, Xi, Putin Sign Peace Declaration",
+         "First three-way summit in Shenzhen agrees nuclear-risk and UN-reform text.",
+         "BBC"),
+        ("Houthi Missile Hits Riyadh Tower",
+         "Missile damages Saudi wealth-fund tower; no injuries.",
+         "Sky News"),
+        ("IAEA: North Korea Expanding Enrichment",
+         "Yongbyon uranium site growing; inspectors barred since 2009.",
+         "Euronews"),
+        ("Pakistan Kills 22 Militants in Raids",
+         "Army storms hideouts near Afghan border in Khyber Pakhtunkhwa.",
+         "The Hindu"),
+        ("Violence Flares Before Hasina Return",
+         "Arson and protests as ousted premier plans comeback; passport bid rejected.",
+         "Guardian"),
+        ("Mongolian President Resigns",
+         "Parliament accepts Khurelsukh's resignation; speaker serves as acting president.",
+         "AP"),
+        ("Japan Inflation Hits Year's High",
+         "Core prices jump as energy subsidies end; Bank of Japan rate hike expected.",
+         "Japan Times"),
+    ]),
+    ("EUROPE", (29, 78, 216), [
+        ("Russian Missiles Strike Kyiv Bridges",
+         "~30 ballistic missiles hit capital; eight killed, three bridges damaged.",
+         "BBC"),
+        ("Italy Grinds to Halt in Strike",
+         "CGIL general strike stops schools, hospitals, transport in 100 cities.",
+         "Reuters"),
+        ("Ukraine Allies Meet in Berlin",
+         "Coalition vows united stance; US envoy floats NATO-style security guarantees.",
+         "France 24"),
+        ("Third Strike Hits Crimea Bridge",
+         "Ukraine hits Kerch Bridge third time in four days; rail traffic halted.",
+         "BBC"),
+        ("Russian Objects Breach Polish Airspace",
+         "Two missiles and a drone cross border; PM Tusk says no air threat.",
+         "Devdiscourse"),
+        ("World Court: Myanmar Committed Genocide",
+         "ICJ rules 9-6 on Rohingya; first genocide verdict against a state.",
+         "BBC"),
+        ("UK-EU Youth Mobility Deal Nears",
+         "London and Brussels set to approve youth scheme at Friday summit.",
+         "BBC"),
+        ("GTA 6 Tops $2.3 Billion Sales",
+         "Rockstar launch becomes biggest entertainment debut ever, estimates say.",
+         "BBC"),
+    ]),
+    ("NORTH AMERICA", (13, 148, 136), [
+        ("Anthropic Jumps 17% on Nasdaq Debut",
+         "AI firm closes near $97; record $81.3B IPO values it near $1.5T.",
+         "BBC"),
+        ("Senate Passes Energy Permitting Overhaul",
+         "Bill clears 62-33, fast-tracking power plants and data-center grids.",
+         "CNBC"),
+        ("Haiti Forces Kill 34 in Raid",
+         "Police retake Martissant corridor from gangs after years of control.",
+         "Al Jazeera"),
+        ("Bukele Registers for Third Term",
+         "El Salvador president files for third straight six-year term.",
+         "Al Jazeera"),
+        ("FAA Halts Juniper Router Rollout",
+         "Agency stops installs after router fault caused nationwide ground stop.",
+         "AP"),
+        ("White House Fires Cyber Director",
+         "Sean Cairncross sacked after week of tech outages; Pentagon CIO steps in.",
+         "France 24"),
+    ]),
+    ("AFRICA", (217, 119, 6), [
+        ("Drone Strike Kills 10 at Sudan Mine",
+         "Attack hits Bajoun gold site in South Kordofan; Amnesty seeks probe.",
+         "AllAfrica"),
+        ("Dozens Missing After Senegal Boat Sinks",
+         "Migrant boat carrying 50-100 capsizes off Yenne; four bodies found.",
+         "BBC"),
+        ("Somalia Expels UAE Ambassador",
+         "Mogadishu accuses Abu Dhabi of undermining its sovereignty.",
+         "Africanews"),
+        ("Zimbabwe Destroys 250,000 Landmines",
+         "HALO Trust milestone, but funding gaps threaten 2030 clearance goal.",
+         "Africanews"),
+        ("Angola Buys 10% of De Beers",
+         "Endiama pays $180M for stake; first gold refinery opens in Luanda.",
+         "Reuters"),
+    ]),
+    ("SOUTH AMERICA", (22, 163, 74), [
+        ("US, Venezuela Sign Military Deal",
+         "Hegseth inks cooperation pact in Caracas after Maduro's removal.",
+         "BBC"),
+        ("Brazil Sells $1B to Defend Real",
+         "Central bank intervenes as dollar nears 5.93 reais; currency down 18%.",
+         "MercoPress"),
+        ("Brazil Protects Raoni Ancestral Land",
+         "Lula recognizes Kayapo and Yudja lands; uncontacted group emerges.",
+         "Al Jazeera"),
+        ("Thousands Protest Colombia Tax Plans",
+         "Unions march in Bogota; first national strike under President Espriella.",
+         "Al Jazeera"),
+    ]),
+    ("OCEANIA", (147, 51, 234), [
+        ("Fiji, Tonga Declare Drought Disasters",
+         "El Nino drought parches Pacific islands; Cook Islands brace for Cyclone Xavier.",
+         "RNZ Pacific"),
+        ("Marathon Champ Banned Three Years",
+         "Jepchirchir stripped of Sydney title in doping ban.",
+         "ABC Australia"),
+        ("Xi: China-Australia Ties Fully Turned",
+         "Xi hails reset as Albanese visits Beijing; trade access on agenda.",
+         "Guardian Australia"),
+        ("Man Charged Over Car-Bomb Research",
+         "Sydney man, 35, charged; police say no ongoing threat to public.",
+         "Register AU"),
+    ]),
+    ("ANTARCTICA", (219, 39, 119), [
+        ("Mawson Doctor Shares Life on Ice",
+         "Station doctor's diary from Antarctica published on 20 November.",
+         "Australian Antarctic Division"),
+        ("Antarctic Ice Cliffs Collapsing Faster",
+         "MIT study: cliffs retreat faster than models, then stabilise; no runaway.",
+         "MIT/Science"),
+    ]),
+]
+
+PAPER = (247, 242, 231)
+INK = (26, 26, 26)
+MUTED = (90, 86, 76)
+RULE = (26, 26, 26)
+NAVY = (20, 33, 61)
+WHITE = (255, 255, 255)
 
 
-def draw_panel(c, idx, kicker, color, headline, body):
-    px = COL_X[idx % 2]
-    py = ROW_Y[idx // 2]
-    # panel fill + border
-    c.rect(px, py, PANEL_W, PANEL_H, WHITE)
-    c.rect(px, py, PANEL_W, 2, BORDER)
-    c.rect(px, py + PANEL_H - 2, PANEL_W, 2, BORDER)
-    c.rect(px, py, 2, PANEL_H, BORDER)
-    c.rect(px + PANEL_W - 2, py, 2, PANEL_H, BORDER)
-    # top bar + kicker + icon
-    c.rect(px, py, PANEL_W, TOPBAR_H, color)
-    c.draw_text(kicker, px + 16, py + 10, 2, WHITE)
-    ICONS[idx](c, px + PANEL_W - 52, py, WHITE)
-    # headline, 1-2 lines, scale 3
-    head_lines = wrap_text(headline, 3, 3, PANEL_W - 32)
-    hy = py + TOPBAR_H + 14
-    for ln in head_lines:
-        c.draw_text(ln, px + 16, hy, 3, BLACK, spacing=3)
-        hy += 21 + 5
-    # body, 3 lines, scale 2
-    body_lines = wrap_text(body, 2, 2, PANEL_W - 32)
-    by = hy + 10
-    for ln in body_lines:
-        c.draw_text(ln, px + 16, by, 2, BODY, spacing=2)
-        by += 14 + 5
-    # fact chip at the bottom of the panel, filled with the panel colour
-    chip = FACT_CHIPS[idx]
-    chip_y = py + PANEL_H - 48
-    chip_w = text_width(chip, 2, 2) + 24
-    c.rect(px + 16, chip_y, chip_w, 32, color)
-    c.draw_text(chip, px + 16 + 12, chip_y + 9, 2, WHITE, spacing=2)
+# --------------------------------------------------------------------------
+# Layout. Two passes: measure the story rows first (so the page height
+# fits the content exactly), then draw. Nothing is positioned by hand
+# after this point — every y comes from the running cursor.
+# --------------------------------------------------------------------------
+
+W = 1800
+MARGIN = 60
+CW = W - 2 * MARGIN
+COLW = (CW - 40) // 2
+GUT = 40
+
+MASTHEAD = "THE WORLD IN ONE DAY"
+DATE_LINE = "FRIDAY 20 NOVEMBER 2026"
+STAT_LINE = "40 STORIES \u2022 7 CONTINENTS"
+MAP_LABEL = "WHERE IT HAPPENED"
+MAP_SPACING = 12
+MAP_DOT = 4
+
+
+def cell_height(headline, summary):
+    lines = wrap_text(summary, 2, COLW)
+    return 21 + 4 + len(lines) * 15 + 3 + 7 + 12, lines
+
+
+def build_rows():
+    """Precompute every section's story rows and heights."""
+    rows_out = []
+    n = 0
+    for name, accent, stories in SECTIONS:
+        numbered = []
+        for headline, summary, outlet in stories:
+            n += 1
+            numbered.append((n, headline, summary, outlet))
+        rows = []
+        for i in range(0, len(numbered), 2):
+            pair = numbered[i:i + 2]
+            heights = [cell_height(h, s)[0] for _, h, s, _ in pair]
+            rows.append((pair, max(heights)))
+        rows_out.append((name, accent, rows))
+    return rows_out
+
+
+def measure(rows_out):
+    y = 56                       # masthead title
+    y += 77 + 10                 # title + gap
+    y += 28 + 12                 # date line + gap
+    y += 6 + 14                  # rules + gap
+    y += 56 + 18                 # stat strip + gap
+    y += 14 + 8                  # map label + gap
+    y += len(MAP_GRID) * MAP_SPACING + 22   # map + gap
+    for _name, _accent, rows in rows_out:
+        y += 52                  # section header
+        for _pair, rh in rows:
+            y += rh
+        y += 16                  # gap after section
+    y += 2 + 12                  # footer rule + gap
+    y += 14 + 6                  # footer line 1
+    y += 7 + 40                  # footer line 2 + bottom margin
+    return y
+
+
+def draw_story(c, x, y, num, accent, headline, summary, outlet):
+    num_txt = "%02d" % num
+    c.text(x, y + 7, num_txt, 2, accent, bold=True)
+    hx = x + text_width(num_txt + " ", 2) + 6
+    c.text(hx, y, headline, 3, INK, bold=True)
+    _h, lines = cell_height(headline, summary)
+    ly = y + 21 + 4
+    for line in lines:
+        c.text(x, ly, line, 2, INK)
+        ly += 15
+    ly += 3
+    c.text(x, ly, "SOURCE: " + outlet.upper(), 1, accent, bold=True)
+
+
+def draw(c, rows_out):
+    c.fill(0, 0, W, c.h, PAPER)
+    # double outer border
+    c.rect(24, 24, W - 48, c.h - 48, RULE, 3)
+    c.rect(32, 32, W - 64, c.h - 64, RULE, 1)
+
+    y = 56
+    c.text_center(W // 2, y, MASTHEAD, 11, INK, bold=True)
+    y += 77 + 10
+    c.text_center(W // 2, y, DATE_LINE, 4, INK, spacing=2)
+    y += 28 + 12
+    c.fill(MARGIN, y, CW, 4, RULE)
+    c.fill(MARGIN, y + 8, CW, 2, RULE)
+    y += 6 + 14
+
+    # stat strip
+    c.fill(MARGIN, y, CW, 56, NAVY)
+    c.text_center(W // 2, y + 14, STAT_LINE, 4, WHITE, bold=True)
+    y += 56 + 18
+
+    # dotted world map
+    c.text_center(W // 2, y, MAP_LABEL, 2, MUTED, spacing=2)
+    y += 14 + 8
+    cols = max(len(r) for r in MAP_GRID)
+    map_w = cols * MAP_SPACING
+    x0 = (W - map_w) // 2
+    for ri, row in enumerate(MAP_GRID):
+        for ci, ch in enumerate(row):
+            if ch == "#":
+                c.dot(x0 + ci * MAP_SPACING + MAP_SPACING // 2,
+                      y + ri * MAP_SPACING + MAP_SPACING // 2,
+                      MAP_DOT, NAVY)
+    y += len(MAP_GRID) * MAP_SPACING + 22
+
+    # continent sections
+    for name, accent, rows in rows_out:
+        total = sum(len(pair) for pair, _ in rows)
+        first = rows[0][0][0][0]
+        last = rows[-1][0][-1][0]
+        c.fill(MARGIN, y, CW, 52, (232, 226, 211))
+        c.fill(MARGIN, y, 10, 52, accent)
+        c.text(MARGIN + 24, y + 15, name, 4, accent, bold=True)
+        c.text_right(W - MARGIN - 24, y + 17,
+                     "%d STORIES  \u2022  %02d-%02d" % (total, first, last),
+                     2, MUTED, bold=True)
+        y += 52
+        for pair, rh in rows:
+            for k, (num, headline, summary, outlet) in enumerate(pair):
+                x = MARGIN + k * (COLW + GUT)
+                draw_story(c, x, y, num, accent, headline, summary, outlet)
+            y += rh
+        y += 16
+
+    # footer
+    c.fill(MARGIN, y, CW, 2, RULE)
+    y += 12
+    c.text_center(W // 2, y,
+                  "All forty stories verified against reporting published "
+                  "on Friday 20 November 2026.", 2, MUTED)
+    y += 14 + 6
+    c.text_center(W // 2, y,
+                  "Drawn by a deterministic Python program (stdlib only). "
+                  "No photographs, no external data. 40 stories, 7 continents.",
+                  1, MUTED)
 
 
 def main():
-    c = Canvas(W, H)
-    # masthead
-    c.rect(0, 0, W, 118, NAVY)
-    title = "WORLD NEWS"
-    tw = text_width(title, 6, 6)
-    c.draw_text(title, (W - tw) // 2, 26, 6, WHITE, spacing=6)
-    date = "FRIDAY 20 NOVEMBER 2026"
-    dw = text_width(date, 3, 3)
-    c.draw_text(date, (W - dw) // 2, 80, 3, GOLD, spacing=3)
-    # red rule under masthead
-    c.rect(0, 118, W, 6, RED)
-    # panels
-    for i, (kicker, color, headline, body) in enumerate(PANELS):
-        draw_panel(c, i, kicker, color, headline, body)
-    # footer strip
-    c.rect(0, 984, W, 40, NAVY)
-    foot = ("Sources: Reuters - UN News - IMD - LaPresse - FSC  |  "
-            "All events Friday 20 November 2026")
-    fw = text_width(foot, 2, 1)
-    c.draw_text(foot, (W - fw) // 2, 998, 2, WHITE, spacing=1)
-    # write output
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "entry.png")
-    size = write_png(path, c)
-    print("wrote %s (%d bytes)" % (path, size))
+    rows_out = build_rows()
+    total = measure(rows_out)
+    canvas = Canvas(W, total, PAPER)
+    draw(canvas, rows_out)
+    outdir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, "entry.png")
+    size = write_png(path, canvas)
+    print("wrote %s  %dx%d  %d bytes" % (path, canvas.w, canvas.h, size))
 
 
 if __name__ == "__main__":
