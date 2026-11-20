@@ -9,7 +9,7 @@ An entry for the make.fun competition
 "Sum up 20 November's world news in one image".
 
 A stdlib-only Python program (`main.py`, no third-party dependencies)
-draws a 1800×2519 newspaper front page summarising forty verified
+draws a 1024×1024 newspaper front page summarising forty verified
 world-news stories from Friday 20 November 2026, grouped by continent:
 Asia (11), Europe (8), North America (6), Africa (5), South America (4),
 Oceania (4), Antarctica (2). A dotted world map, a masthead, and a
@@ -126,8 +126,8 @@ python3 main.py
 
 This writes `entry.png` to `$MAKEFUN_OUTPUT_DIR` if set, otherwise to
 `/output`. Two runs produce a byte-identical file (verified:
-sha256 `1cdf101cea103337f4cfac3c7e50301e1a76a21d979f22ed0c9d5fca43d232a8`,
-1800×2519, 76,780 bytes).
+sha256 `2cdad65a272fafc0881654a8ad126f1717dffa525f781bfc632157a142be59f7`,
+1024×1024, 43,749 bytes — inside the competition's 1 MiB / 1024×1024 gate).
 
 ## How the image is built
 
